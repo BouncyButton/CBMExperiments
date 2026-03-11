@@ -15,6 +15,7 @@ def extract_data(data_dir):
     cwd = os.getcwd()
     data_path = join(cwd,data_dir + '/images')
     val_ratio = 0.2
+    val_files = None
 
     path_to_id_map = dict() #map from full image path to image id
     with open(data_path.replace('images', 'images.txt'), 'r') as f:
@@ -94,4 +95,3 @@ if __name__ == "__main__":
         else:
             pickle.dump(test_data, f)
         f.close()
-
