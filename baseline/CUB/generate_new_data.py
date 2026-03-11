@@ -92,8 +92,13 @@ def get_class_attributes_data(min_class_count, out_dir, modify_data_dir='', keep
     equal_count = np.where(class_attr_min_label == class_attr_max_label) #check where 0 count = 1 count, set the corresponding class attribute label to be 1
     class_attr_max_label[equal_count] = 1
 
-    attr_class_count = np.sum(class_attr_max_label, axis=0)
-    mask = np.where(attr_class_count >= min_class_count)[0] #select attributes that are present (on a class level) in at least [min_class_count] classes
+    # Hard-wire the 112-attribute list used in the paper to ensure compatibility.
+    mask = np.array([
+        1, 4, 6, 7, 10, 14, 15, 20, 21, 23, 25, 29, 30, 35, 36, 38, 40, 44, 45, 50, 51, 53, 54, 56, 57, 59, 63, 64, 69, 70, 72, 75, 80, 84, 90, 91,
+        93, 99, 101, 106, 110, 111, 116, 117, 119, 125, 126, 131, 132, 134, 145, 149, 151, 152, 153, 157, 158, 163, 164, 168, 172, 178, 179, 181,
+        183, 187, 188, 193, 194, 196, 198, 202, 203, 208, 209, 211, 212, 213, 218, 220, 221, 225, 235, 236, 238, 239, 240, 242, 243, 244, 249, 253,
+        254, 259, 260, 262, 268, 274, 277, 283, 289, 292, 293, 294, 298, 299, 304, 305, 308, 309, 310, 311
+    ], dtype=int)
     class_attr_label_masked = class_attr_max_label[:, mask]
     if keep_instance_data:
         collapse_fn = lambda d: list(np.array(d['attribute_label'])[mask])
