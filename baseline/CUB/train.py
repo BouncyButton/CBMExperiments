@@ -150,6 +150,18 @@ def train(model, args):
     logger.write(str(imbalance) + '\n')
     logger.flush()
 
+    if args.init_model:
+        ckpt = torch.load(args.init_model, map_location='cpu')
+        if isinstance(ckpt, dict) and 'state_dict' in ckpt:
+            state = ckpt['state_dict']
+        elif hasattr(ckpt, 'state_dict'):
+            state = ckpt.state_dict()
+        else:
+            state = ckpt
+        if isinstance(state, dict) and len(state) > 0 and list(state.keys())[0].startswith('module.'):
+            state = {k.replace('module.', '', 1): v for k, v in state.items()}
+        model.load_state_dict(state, strict=True)
+
     model = model.cuda()
     criterion = torch.nn.CrossEntropyLoss()
     if args.use_attr and not args.no_img:
@@ -347,6 +359,7 @@ def parse_arguments(experiment):
                             help='Whether to train X -> A -> Y end to end. Train cmd is the same as cotraining + this arg')
         parser.add_argument('-optimizer', default='SGD', help='Type of optimizer to use, options incl SGD, RMSProp, Adam')
         parser.add_argument('-ckpt', default='', help='For retraining on both train + val set')
+        parser.add_argument('-init_model', default='', help='Path to a model to initialize weights from')
         parser.add_argument('-scheduler_step', type=int, default=1000,
                             help='Number of steps before decaying current learning rate by half')
         parser.add_argument('-normalize_loss', action='store_true',
