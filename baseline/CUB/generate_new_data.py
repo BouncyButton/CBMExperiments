@@ -13,11 +13,11 @@ from PIL import Image
 from shutil import copyfile
 import torchvision.transforms as transforms
 from collections import defaultdict as ddict
+from tqdm import tqdm
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from CUB.config import N_ATTRIBUTES, N_CLASSES
 from CUB import data_processing
-
 
 def get_few_shot_data(n_samples, out_dir, data_file='train.pkl'):
     """
@@ -313,7 +313,7 @@ def create_new_dataset(out_dir, field_change, compute_fn, datasets=['train', 'va
             continue
         data = pickle.load(open(path, 'rb'))
         new_data = []
-        for d in data:
+        for d in tqdm(data):
             new_d = copy.deepcopy(d)
             new_value = compute_fn(d)
             if field_change in d:
