@@ -16,6 +16,7 @@ from collections import defaultdict as ddict
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from CUB.config import N_ATTRIBUTES, N_CLASSES
+from CUB import data_processing
 
 
 def get_few_shot_data(n_samples, out_dir, data_file='train.pkl'):
@@ -62,7 +63,7 @@ def get_fraction_data(fraction, out_dir, data_file='train.pkl'):
     f = open(os.path.join(out_dir, data_file), 'wb')
     pickle.dump(new_data, f)
 
-def get_class_attributes_data(min_class_count, out_dir, modify_data_dir='', keep_instance_data=False):
+def get_class_attributes_data(min_class_count, out_dir, modify_data_dir='', keep_instance_data=False, k=None, clustering_method=None):
     """
     Use train.pkl to aggregate attributes on class level and only keep those that are predominantly 1 for at least min_class_count classes
     Transform data in modify_data_dir file using the class attribute statistics and save the new dataset to out_dir
@@ -73,7 +74,10 @@ def get_class_attributes_data(min_class_count, out_dir, modify_data_dir='', keep
     183, 187, 188, 193, 194, 196, 198, 202, 203, 208, 209, 211, 212, 213, 218, 220, 221, 225, 235, 236, 238, 239, 240, 242, 243, 244, 249, 253, \
     254, 259, 260, 262, 268, 274, 277, 283, 289, 292, 293, 294, 298, 299, 304, 305, 308, 309, 310, 311]
     """
-    data = pickle.load(open('train.pkl', 'rb'))
+
+    # TODO: this is the spot to edit to create different denoising!!
+    train_path = os.path.join(modify_data_dir, 'train.pkl') if modify_data_dir else 'train.pkl'
+    data = pickle.load(open(train_path, 'rb'))
     class_attr_count = np.zeros((N_CLASSES, N_ATTRIBUTES, 2))
     for d in data:
         class_label = d['class_label']
@@ -95,7 +99,32 @@ def get_class_attributes_data(min_class_count, out_dir, modify_data_dir='', keep
         collapse_fn = lambda d: list(np.array(d['attribute_label'])[mask])
     else:
         collapse_fn = lambda d: list(class_attr_label_masked[d['class_label'], :])
+    _ = k, clustering_method  # unused for now
     create_new_dataset(out_dir, 'attribute_label', collapse_fn, data_dir=modify_data_dir)
+
+
+def denoise_concepts(raw_data_dir, out_dir, min_class_count=10, k=None, clustering_method=None, keep_instance_data=False):
+    """
+    Create train/val/test splits from the raw CUB data, then apply class-level concept denoising.
+    k and clustering_methods are currently unused but wired for future extension.
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    splits_dir = os.path.join(out_dir, '_splits')
+    os.makedirs(splits_dir, exist_ok=True)
+
+    train_data, val_data, test_data = data_processing.extract_data(raw_data_dir)
+    for name, data in [('train', train_data), ('val', val_data), ('test', test_data)]:
+        with open(os.path.join(splits_dir, name + '.pkl'), 'wb') as f:
+            pickle.dump(data, f)
+
+    get_class_attributes_data(
+        min_class_count=min_class_count,
+        out_dir=out_dir,
+        modify_data_dir=splits_dir,
+        keep_instance_data=keep_instance_data,
+        k=k,
+        clustering_method=clustering_method
+    )
 
 def shuffle_class(out_dir, data_dir):
     """
@@ -320,7 +349,9 @@ def mask_dataset(pkl_file, out_dir_name, remove_bkgnd=True):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('exp', type=str,
-                        choices=['ExtractConcepts', 'ExtractProbeRepresentations', 'DataEfficiencySplits', 'ChangeAdversarialDataDir'],
+                        choices=['ExtractConcepts', 'ExtractProbeRepresentations', 'DataEfficiencySplits',
+                                 'ChangeAdversarialDataDir',
+                                 'DenoiseConcepts'],
                         help='Name of experiment to run.')
     parser.add_argument('--model_path', type=str, help='Path of model')
     parser.add_argument('--out_dir', type=str, help='Output directory')
@@ -332,6 +363,10 @@ if __name__ == '__main__':
     parser.add_argument('--layer_idx', type=int, default=None, help='Layer id to extract probe representations')
     parser.add_argument('--n_samples', type=int, help='Number of samples for data efficiency split')
     parser.add_argument('--splits_dir', type=str, help='Data dir of splits')
+    parser.add_argument('--min_class_count', type=int, default=10, help='Minimum number of classes where an attribute is present')
+    parser.add_argument('--keep_instance_data', action='store_true', help='Keep instance-level attributes after filtering')
+    parser.add_argument('--k', type=int, default=None, help='Number of clusters (unused for now)')
+    parser.add_argument('--clustering_method', type=str, default=None, help='Clustering method name (unused for now)')
     args = parser.parse_args()
 
     if args.exp == 'ExtractConcepts':
@@ -344,3 +379,13 @@ if __name__ == '__main__':
         get_few_shot_data(args.n_samples, args.out_dir, os.path.join(args.splits_dir, 'train.pkl'))
         get_few_shot_data(args.n_samples, args.out_dir, os.path.join(args.splits_dir, 'val.pkl'))
         copyfile(os.path.join(args.splits_dir, 'test.pkl'), os.path.join(args.out_dir, 'test.pkl'))
+
+    elif args.exp == 'DenoiseConcepts':
+        denoise_concepts(
+            raw_data_dir=args.data_dir,
+            out_dir=args.out_dir,
+            min_class_count=args.min_class_count,
+            k=args.k,
+            clustering_method=args.clustering_method,
+            keep_instance_data=args.keep_instance_data
+        )

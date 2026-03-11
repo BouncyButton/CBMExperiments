@@ -33,8 +33,6 @@ def run_epoch_simple(model, optimizer, loader, loss_meter, acc_meter, criterion,
             #inputs = [i.long() for i in inputs]
             inputs = torch.stack(inputs).t().float()
 
-        print(inputs.shape)
-
         inputs = torch.flatten(inputs, start_dim=1).float()
         inputs_var = torch.autograd.Variable(inputs).cuda()
         inputs_var = inputs_var.cuda() if torch.cuda.is_available() else inputs_var
@@ -77,8 +75,6 @@ def run_epoch(model, optimizer, loader, loss_meter, acc_meter, criterion, attr_c
                 attr_labels = attr_labels.unsqueeze(1)
             attr_labels_var = torch.autograd.Variable(attr_labels).float()
             attr_labels_var = attr_labels_var.cuda() if torch.cuda.is_available() else attr_labels_var
-
-        print(inputs.shape)
 
         inputs_var = torch.autograd.Variable(inputs)
         inputs_var = inputs_var.cuda() if torch.cuda.is_available() else inputs_var
