@@ -257,7 +257,10 @@ if __name__ == '__main__':
         class_acc_meter, attr_acc_meter = result[0], result[1]
         y_results.append(1 - class_acc_meter[0].avg[0].item() / 100.)
         if attr_acc_meter is not None:
-            c_results.append(1 - attr_acc_meter[0].avg.item() / 100.)
+            avg_attr = attr_acc_meter[0].avg
+            if hasattr(avg_attr, 'item'):
+                avg_attr = avg_attr.item()
+            c_results.append(1 - float(avg_attr) / 100.)
         else:
             c_results.append(-1)
     values = (np.mean(y_results), np.std(y_results), np.mean(c_results), np.std(c_results))
