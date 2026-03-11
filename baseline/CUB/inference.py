@@ -8,6 +8,7 @@ import joblib
 import argparse
 import numpy as np
 from sklearn.metrics import f1_score
+from tqdm import tqdm
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 from CUB.dataset import load_data
@@ -86,7 +87,7 @@ def eval(args):
     all_class_labels, all_class_outputs, all_class_logits = [], [], []
     topk_class_labels, topk_class_outputs = [], []
 
-    for data_idx, data in enumerate(loader):
+    for data_idx, data in tqdm(enumerate(loader)):
         if args.use_attr:
             if args.no_img:  # A -> Y
                 inputs, labels = data
