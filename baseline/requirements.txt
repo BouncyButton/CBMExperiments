@@ -48,7 +48,7 @@ srsly==0.1.0
 sympy==1.4
 termcolor==1.1.0
 thinc==7.0.8
-torch==1.1.0
+torch==1.2.0
 torchvision==0.4.0
 tqdm==4.35.0
 # unattended-upgrades==0.1
