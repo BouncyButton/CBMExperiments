@@ -28,11 +28,13 @@ def run_epoch_simple(model, optimizer, loader, loss_meter, acc_meter, criterion,
         model.eval()
     for _, data in enumerate(loader):
         inputs, labels = data
-        print(inputs.shape)
 
         if isinstance(inputs, list):
             #inputs = [i.long() for i in inputs]
             inputs = torch.stack(inputs).t().float()
+
+        print(inputs.shape)
+
         inputs = torch.flatten(inputs, start_dim=1).float()
         inputs_var = torch.autograd.Variable(inputs).cuda()
         inputs_var = inputs_var.cuda() if torch.cuda.is_available() else inputs_var
