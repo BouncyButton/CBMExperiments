@@ -87,7 +87,7 @@ def eval(args):
     all_class_labels, all_class_outputs, all_class_logits = [], [], []
     topk_class_labels, topk_class_outputs = [], []
 
-    for data_idx, data in tqdm(enumerate(loader)):
+    for data_idx, data in tqdm(enumerate(loader), total=len(loader)):
         if args.use_attr:
             if args.no_img:  # A -> Y
                 inputs, labels = data
