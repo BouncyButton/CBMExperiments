@@ -74,7 +74,7 @@ def get_class_attributes_data(min_class_count, out_dir, modify_data_dir='', keep
     183, 187, 188, 193, 194, 196, 198, 202, 203, 208, 209, 211, 212, 213, 218, 220, 221, 225, 235, 236, 238, 239, 240, 242, 243, 244, 249, 253, \
     254, 259, 260, 262, 268, 274, 277, 283, 289, 292, 293, 294, 298, 299, 304, 305, 308, 309, 310, 311]
     """
-    print('The value of k is %s and clustering method is %s' % (k, clustering_method))
+    # NOTE: k and clustering_method are optional and used for alternative denoising strategies.
     # TODO: this is the spot to edit to create different denoising!!
     train_path = os.path.join(modify_data_dir, 'train.pkl') if modify_data_dir else 'train.pkl'
     data = pickle.load(open(train_path, 'rb'))
@@ -100,11 +100,68 @@ def get_class_attributes_data(min_class_count, out_dir, modify_data_dir='', keep
         254, 259, 260, 262, 268, 274, 277, 283, 289, 292, 293, 294, 298, 299, 304, 305, 308, 309, 310, 311
     ], dtype=int)
     class_attr_label_masked = class_attr_max_label[:, mask]
-    if keep_instance_data:
-        collapse_fn = lambda d: list(np.array(d['attribute_label'])[mask])
+    if clustering_method == 'kmeans' and k is not None:
+        from sklearn.cluster import KMeans
+        rng = np.random.RandomState(42)
+        per_class = {}
+        # Pre-group by class for efficient access
+        class_to_data = {c: [] for c in range(N_CLASSES)}
+        for d in data:
+            class_to_data[d['class_label']].append(d)
+
+        for c in range(N_CLASSES):
+            class_data = class_to_data.get(c, [])
+            if not class_data:
+                continue
+            Xc = []
+            for d in class_data:
+                attrs = np.array(d['attribute_label'])[mask].astype(np.float32)
+                cert = np.array(d['attribute_certainty'])[mask]
+                not_visible = np.where((attrs == 0) & (cert == 1))[0]
+                if len(not_visible) > 0:
+                    attrs[not_visible] = class_attr_label_masked[c, not_visible]
+                Xc.append(attrs)
+            Xc = np.stack(Xc, axis=0)
+            Kc = min(k, len(Xc))
+            km = KMeans(n_clusters=Kc, random_state=rng.randint(0, 1_000_000), n_init='auto')
+            km.fit(Xc)
+
+            # Majority-vote prototype per cluster, ignoring not-visible (same as original)
+            prototypes = np.zeros((Kc, len(mask)), dtype=np.int8)
+            for j in range(Kc):
+                counts = np.zeros((len(mask), 2), dtype=np.int32)
+                member_idx = np.where(km.labels_ == j)[0]
+                for mi in member_idx:
+                    d = class_data[mi]
+                    attrs = np.array(d['attribute_label'])[mask]
+                    cert = np.array(d['attribute_certainty'])[mask]
+                    for a_i, a_val in enumerate(attrs):
+                        if a_val == 0 and cert[a_i] == 1:
+                            continue
+                        counts[a_i, a_val] += 1
+                max_label = np.argmax(counts, axis=1)
+                min_label = np.argmin(counts, axis=1)
+                tie = np.where(max_label == min_label)[0]
+                max_label[tie] = 1
+                prototypes[j] = max_label
+            per_class[c] = {"kmeans": km, "prototypes": prototypes}
+
+        def collapse_fn(d):
+            c = d['class_label']
+            attrs = np.array(d['attribute_label'])[mask].astype(np.float32)
+            cert = np.array(d['attribute_certainty'])[mask]
+            not_visible = np.where((attrs == 0) & (cert == 1))[0]
+            if len(not_visible) > 0:
+                attrs[not_visible] = class_attr_label_masked[c, not_visible]
+            info = per_class[c]
+            cid = info['kmeans'].predict(attrs.reshape(1, -1))[0]
+            return list(info['prototypes'][cid])
     else:
-        collapse_fn = lambda d: list(class_attr_label_masked[d['class_label'], :])
-    _ = k, clustering_method  # unused for now
+        if keep_instance_data:
+            collapse_fn = lambda d: list(np.array(d['attribute_label'])[mask])
+        else:
+            collapse_fn = lambda d: list(class_attr_label_masked[d['class_label'], :])
+
     create_new_dataset(out_dir, 'attribute_label', collapse_fn, data_dir=modify_data_dir)
 
 
