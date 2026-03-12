@@ -246,8 +246,7 @@ def train(model, args):
         if epoch <= stop_epoch:
             scheduler.step(epoch) #scheduler step to update lr at the end of epoch     
         #inspect lr
-        if epoch % 10 == 0:
-            print('Current lr:', scheduler.get_lr())
+        print('Current lr:', scheduler.get_lr())
 
         # if epoch % args.save_step == 0:
         #     torch.save(model, os.path.join(args.log_dir, '%d_model.pth' % epoch))
