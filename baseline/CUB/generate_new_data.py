@@ -63,7 +63,7 @@ def get_fraction_data(fraction, out_dir, data_file='train.pkl'):
     f = open(os.path.join(out_dir, data_file), 'wb')
     pickle.dump(new_data, f)
 
-def get_class_attributes_data(min_class_count, out_dir, modify_data_dir='', keep_instance_data=False, k=None, clustering_method=None):
+def get_class_attributes_data(min_class_count, out_dir, modify_data_dir='', keep_instance_data=False, k=None, clustering_method=None, seed=None):
     """
     Use train.pkl to aggregate attributes on class level and only keep those that are predominantly 1 for at least min_class_count classes
     Transform data in modify_data_dir file using the class attribute statistics and save the new dataset to out_dir
@@ -123,7 +123,7 @@ def get_class_attributes_data(min_class_count, out_dir, modify_data_dir='', keep
                 Xc.append(attrs)
             Xc = np.stack(Xc, axis=0)
             Kc = min(k, len(Xc))
-            km = KMeans(n_clusters=Kc, random_state=rng.randint(0, 1_000_000), n_init=10)
+            km = KMeans(n_clusters=Kc, random_state=seed, n_init=10)
             km.fit(Xc)
 
             # Majority-vote prototype per cluster, ignoring not-visible (same as original)
@@ -165,7 +165,7 @@ def get_class_attributes_data(min_class_count, out_dir, modify_data_dir='', keep
     create_new_dataset(out_dir, 'attribute_label', collapse_fn, data_dir=modify_data_dir)
 
 
-def denoise_concepts(raw_data_dir, out_dir, min_class_count=10, k=None, clustering_method=None, keep_instance_data=False):
+def denoise_concepts(raw_data_dir, out_dir, min_class_count=10, k=None, clustering_method=None, keep_instance_data=False, seed=None):
     """
     Create train/val/test splits from the raw CUB data, then apply class-level concept denoising.
     k and clustering_methods are currently unused but wired for future extension.
@@ -185,7 +185,8 @@ def denoise_concepts(raw_data_dir, out_dir, min_class_count=10, k=None, clusteri
         modify_data_dir=splits_dir,
         keep_instance_data=keep_instance_data,
         k=k,
-        clustering_method=clustering_method
+        clustering_method=clustering_method,
+        seed=seed
     )
 
 def shuffle_class(out_dir, data_dir):
@@ -427,8 +428,9 @@ if __name__ == '__main__':
     parser.add_argument('--splits_dir', type=str, help='Data dir of splits')
     parser.add_argument('--min_class_count', type=int, default=10, help='Minimum number of classes where an attribute is present')
     parser.add_argument('--keep_instance_data', action='store_true', help='Keep instance-level attributes after filtering')
-    parser.add_argument('--k', type=int, default=None, help='Number of clusters (unused for now)')
-    parser.add_argument('--clustering_method', type=str, default=None, help='Clustering method name (unused for now)')
+    parser.add_argument('--k', type=int, default=None, help='Number of clusters')
+    parser.add_argument('--clustering_method', type=str, default=None, help='Clustering method name')
+    parser.add_argument('--seed', type=int, default=42, help='Random seed for clustering')
     args = parser.parse_args()
 
     if args.exp == 'ExtractConcepts':
@@ -449,5 +451,6 @@ if __name__ == '__main__':
             min_class_count=args.min_class_count,
             k=args.k,
             clustering_method=args.clustering_method,
-            keep_instance_data=args.keep_instance_data
+            keep_instance_data=args.keep_instance_data,
+            seed=args.seed
         )
