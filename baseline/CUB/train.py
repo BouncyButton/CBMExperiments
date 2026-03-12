@@ -10,6 +10,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import math
 import torch
 import numpy as np
+from tqdm import tqdm
 from analysis import Logger, AverageMeter, accuracy, binary_accuracy
 
 from CUB import probe, tti, gen_cub_synthetic, hyperopt
@@ -204,7 +205,7 @@ def train(model, args):
     best_val_loss = float('inf')
     best_val_acc = 0
 
-    for epoch in range(0, args.epochs):
+    for epoch in tqdm(list(range(0, args.epochs))):
         train_loss_meter = AverageMeter()
         train_acc_meter = AverageMeter()
         if args.no_img:
