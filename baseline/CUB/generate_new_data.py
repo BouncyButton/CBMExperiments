@@ -123,7 +123,7 @@ def get_class_attributes_data(min_class_count, out_dir, modify_data_dir='', keep
                 Xc.append(attrs)
             Xc = np.stack(Xc, axis=0)
             Kc = min(k, len(Xc))
-            km = KMeans(n_clusters=Kc, random_state=rng.randint(0, 1_000_000), n_init='auto')
+            km = KMeans(n_clusters=Kc, random_state=rng.randint(0, 1_000_000), n_init=10)
             km.fit(Xc)
 
             # Majority-vote prototype per cluster, ignoring not-visible (same as original)
