@@ -100,9 +100,17 @@ def get_class_attributes_data(min_class_count, out_dir, modify_data_dir='', keep
         254, 259, 260, 262, 268, 274, 277, 283, 289, 292, 293, 294, 298, 299, 304, 305, 308, 309, 310, 311
     ], dtype=int)
     class_attr_label_masked = class_attr_max_label[:, mask]
-    if clustering_method == 'kmeans' and k is not None:
-        from sklearn.cluster import KMeans
-        rng = np.random.RandomState(42)
+    if clustering_method == 'inf':
+        collapse_fn = lambda d: list(np.array(d['attribute_label'])[mask])
+    elif clustering_method in ['kmeans', 'kmodes'] and k is not None:
+        if clustering_method == 'kmeans':
+            from sklearn.cluster import KMeans
+        else:
+            try:
+                from kmodes.kmodes import KModes
+            except Exception as e:
+                raise ImportError("clustering_method='kmodes' requires the kmodes package. Install with `pip install kmodes`.") from e
+        rng = np.random.RandomState(42 if seed is None else seed)
         per_class = {}
         # Pre-group by class for efficient access
         class_to_data = {c: [] for c in range(N_CLASSES)}
@@ -123,14 +131,19 @@ def get_class_attributes_data(min_class_count, out_dir, modify_data_dir='', keep
                 Xc.append(attrs)
             Xc = np.stack(Xc, axis=0)
             Kc = min(k, len(Xc))
-            km = KMeans(n_clusters=Kc, random_state=seed, n_init=10)
-            km.fit(Xc)
+            if clustering_method == 'kmeans':
+                km = KMeans(n_clusters=Kc, random_state=rng.randint(0, 1_000_000), n_init=10)
+                km.fit(Xc)
+                labels = km.labels_
+            else:
+                km = KModes(n_clusters=Kc, init='Huang', n_init=5, random_state=rng.randint(0, 1_000_000))
+                labels = km.fit_predict(Xc.astype(np.int8))
 
             # Majority-vote prototype per cluster, ignoring not-visible (same as original)
             prototypes = np.zeros((Kc, len(mask)), dtype=np.int8)
             for j in range(Kc):
                 counts = np.zeros((len(mask), 2), dtype=np.int32)
-                member_idx = np.where(km.labels_ == j)[0]
+                member_idx = np.where(labels == j)[0]
                 for mi in member_idx:
                     d = class_data[mi]
                     attrs = np.array(d['attribute_label'])[mask]
@@ -144,7 +157,7 @@ def get_class_attributes_data(min_class_count, out_dir, modify_data_dir='', keep
                 tie = np.where(max_label == min_label)[0]
                 max_label[tie] = 1
                 prototypes[j] = max_label
-            per_class[c] = {"kmeans": km, "prototypes": prototypes}
+            per_class[c] = {"clusterer": km, "prototypes": prototypes}
 
         def collapse_fn(d):
             c = d['class_label']
@@ -154,7 +167,10 @@ def get_class_attributes_data(min_class_count, out_dir, modify_data_dir='', keep
             if len(not_visible) > 0:
                 attrs[not_visible] = class_attr_label_masked[c, not_visible]
             info = per_class[c]
-            cid = info['kmeans'].predict(attrs.reshape(1, -1))[0]
+            if clustering_method == 'kmeans':
+                cid = info['clusterer'].predict(attrs.reshape(1, -1))[0]
+            else:
+                cid = info['clusterer'].predict(attrs.astype(np.int8).reshape(1, -1))[0]
             return list(info['prototypes'][cid])
     else:
         if keep_instance_data:
