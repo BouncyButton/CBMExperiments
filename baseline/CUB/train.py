@@ -194,12 +194,13 @@ def train(model, args):
 
     if args.ckpt: #retraining
         train_loader = load_data([train_data_path, val_data_path], args.use_attr, args.no_img, args.batch_size, args.uncertain_labels, image_dir=args.image_dir, \
-                                 n_class_attr=args.n_class_attr, resampling=args.resampling)
+                                 n_class_attr=args.n_class_attr, resampling=args.resampling, num_workers=args.num_workers, pin_memory=args.pin_memory)
         val_loader = None
     else:
         train_loader = load_data([train_data_path], args.use_attr, args.no_img, args.batch_size, args.uncertain_labels, image_dir=args.image_dir, \
-                                 n_class_attr=args.n_class_attr, resampling=args.resampling)
-        val_loader = load_data([val_data_path], args.use_attr, args.no_img, args.batch_size, image_dir=args.image_dir, n_class_attr=args.n_class_attr)
+                                 n_class_attr=args.n_class_attr, resampling=args.resampling, num_workers=args.num_workers, pin_memory=args.pin_memory)
+        val_loader = load_data([val_data_path], args.use_attr, args.no_img, args.batch_size, image_dir=args.image_dir, n_class_attr=args.n_class_attr, \
+                              num_workers=args.num_workers, pin_memory=args.pin_memory)
 
     best_val_epoch = -1
     best_val_loss = float('inf')
@@ -372,6 +373,8 @@ def parse_arguments(experiment):
                                  'For end2end & bottleneck model')
         parser.add_argument('-connect_CY', action='store_true',
                             help='Whether to use concepts as auxiliary features (in multitasking) to predict Y')
+        parser.add_argument('--num_workers', type=int, default=0, help='Number of DataLoader workers')
+        parser.add_argument('--pin_memory', action='store_true', help='Enable DataLoader pin_memory')
         args = parser.parse_args()
         args.three_class = (args.n_class_attr == 3)
         return (args,)

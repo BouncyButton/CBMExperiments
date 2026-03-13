@@ -127,7 +127,7 @@ class ImbalancedDatasetSampler(torch.utils.data.sampler.Sampler):
     def __len__(self):
         return self.num_samples
 
-def load_data(pkl_paths, use_attr, no_img, batch_size, uncertain_label=False, n_class_attr=2, image_dir='images', resampling=False, resol=299):
+def load_data(pkl_paths, use_attr, no_img, batch_size, uncertain_label=False, n_class_attr=2, image_dir='images', resampling=False, resol=299, num_workers=0, pin_memory=False):
     """
     Note: Inception needs (299,299,3) images with inputs scaled between -1 and 1
     Loads data with transformations applied, and upsample the minority class if there is class imbalance and weighted loss is not used
@@ -166,9 +166,9 @@ def load_data(pkl_paths, use_attr, no_img, batch_size, uncertain_label=False, n_
         shuffle = False
     if resampling:
         sampler = BatchSampler(ImbalancedDatasetSampler(dataset), batch_size=batch_size, drop_last=drop_last)
-        loader = DataLoader(dataset, batch_sampler=sampler)
+        loader = DataLoader(dataset, batch_sampler=sampler, num_workers=num_workers, pin_memory=pin_memory)
     else:
-        loader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, drop_last=drop_last)
+        loader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, drop_last=drop_last, num_workers=num_workers, pin_memory=pin_memory)
     return loader
 
 def find_class_imbalance(pkl_file, multiple_attr=False, attr_idx=-1):
