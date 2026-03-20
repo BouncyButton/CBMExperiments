@@ -11,11 +11,12 @@ from os.path import isfile, isdir, join
 from collections import defaultdict as ddict
 
 
-def extract_data(data_dir):
+def extract_data(data_dir, seed=None):
     cwd = os.getcwd()
     data_path = join(cwd,data_dir + '/images')
     val_ratio = 0.2
     val_files = None
+    rng = random.Random(seed) if seed is not None else random
 
     path_to_id_map = dict() #map from full image path to image id
     with open(data_path.replace('images', 'images.txt'), 'r') as f:
@@ -53,7 +54,7 @@ def extract_data(data_dir):
     for i, folder in enumerate(folder_list):
         folder_path = join(data_path, folder)
         classfile_list = [cf for cf in listdir(folder_path) if (isfile(join(folder_path,cf)) and cf[0] != '.')]
-        #classfile_list.sort()
+        classfile_list.sort()
         for cf in classfile_list:
             img_id = path_to_id_map[join(folder_path, cf)]
             img_path = join(folder_path, cf)
@@ -70,7 +71,7 @@ def extract_data(data_dir):
             else:
                 test_data.append(metadata)
 
-    random.shuffle(train_val_data)
+    rng.shuffle(train_val_data)
     split = int(val_ratio * len(train_val_data))
     train_data = train_val_data[split :]
     val_data = train_val_data[: split]
@@ -82,8 +83,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Dataset preparation')
     parser.add_argument('-save_dir', '-d', help='Where to save the new datasets')
     parser.add_argument('-data_dir', help='Where to load the datasets')
+    parser.add_argument('--seed', type=int, default=None, help='Random seed for deterministic train/val split')
     args = parser.parse_args()
-    train_data, val_data, test_data = extract_data(args.data_dir)
+    train_data, val_data, test_data = extract_data(args.data_dir, seed=args.seed)
 
     for dataset in ['train','val','test']:
         print("Processing %s set" % dataset)

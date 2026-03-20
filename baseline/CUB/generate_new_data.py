@@ -301,7 +301,7 @@ def denoise_concepts(raw_data_dir, out_dir, min_class_count=10, k=None, clusteri
     splits_dir = os.path.join(out_dir, '_splits')
     os.makedirs(splits_dir, exist_ok=True)
 
-    train_data, val_data, test_data = data_processing.extract_data(raw_data_dir)
+    train_data, val_data, test_data = data_processing.extract_data(raw_data_dir, seed=seed)
     for name, data in [('train', train_data), ('val', val_data), ('test', test_data)]:
         with open(os.path.join(splits_dir, name + '.pkl'), 'wb') as f:
             pickle.dump(data, f)
