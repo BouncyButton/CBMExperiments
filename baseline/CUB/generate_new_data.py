@@ -14,10 +14,121 @@ from shutil import copyfile
 import torchvision.transforms as transforms
 from collections import defaultdict as ddict
 from tqdm import tqdm
+from scipy.cluster.hierarchy import linkage, fcluster
+from scipy.spatial.distance import pdist, squareform
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from CUB.config import N_ATTRIBUTES, N_CLASSES
 from CUB import data_processing
+
+
+def _prepare_masked_attributes(d, mask, fallback_attrs):
+    attrs = np.array(d['attribute_label'])[mask].astype(np.int8)
+    cert = np.array(d['attribute_certainty'])[mask]
+    not_visible = np.where((attrs == 0) & (cert == 1))[0]
+    if len(not_visible) > 0:
+        attrs[not_visible] = fallback_attrs[not_visible]
+    return attrs
+
+
+def _compute_majority_prototype(class_data, member_idx, mask):
+    counts = np.zeros((len(mask), 2), dtype=np.int32)
+    for mi in member_idx:
+        d = class_data[mi]
+        attrs = np.array(d['attribute_label'])[mask]
+        cert = np.array(d['attribute_certainty'])[mask]
+        for a_i, a_val in enumerate(attrs):
+            if a_val == 0 and cert[a_i] == 1:
+                continue
+            counts[a_i, a_val] += 1
+    max_label = np.argmax(counts, axis=1)
+    min_label = np.argmin(counts, axis=1)
+    tie = np.where(max_label == min_label)[0]
+    max_label[tie] = 1
+    return max_label.astype(np.int8)
+
+
+def _compute_complete_linkage_clustering(class_to_data, class_attr_label_masked, mask, single_cluster_ratio, seed):
+    del seed  # reserved for interface consistency
+    if not 0.0 <= single_cluster_ratio <= 1.0:
+        raise ValueError("complete_linkage_single_cluster_ratio must be in [0, 1].")
+
+    prepared_by_class = {}
+    class_diameters = []
+    for c in range(N_CLASSES):
+        class_data = class_to_data.get(c, [])
+        if not class_data:
+            continue
+        fallback_attrs = class_attr_label_masked[c]
+        Xc = np.stack([
+            _prepare_masked_attributes(d, mask, fallback_attrs)
+            for d in class_data
+        ], axis=0)
+        prepared_by_class[c] = {"class_data": class_data, "X": Xc}
+        if len(Xc) <= 1:
+            class_diameters.append(0.0)
+        else:
+            class_diameters.append(float(pdist(Xc, metric='hamming').max()))
+
+    if not class_diameters:
+        return {}, 0.0
+
+    distance_threshold = float(np.quantile(class_diameters, single_cluster_ratio))
+    per_class = {}
+    single_cluster_count = 0
+
+    for c, info in prepared_by_class.items():
+        class_data = info["class_data"]
+        Xc = info["X"]
+        if len(Xc) == 1:
+            cluster_labels = np.array([1], dtype=np.int32)
+            class_diameter = 0.0
+        elif len(Xc) == 2:
+            pair_distance = float(pdist(Xc, metric='hamming')[0])
+            class_diameter = pair_distance
+            if pair_distance <= distance_threshold:
+                cluster_labels = np.array([1, 1], dtype=np.int32)
+            else:
+                cluster_labels = np.array([1, 2], dtype=np.int32)
+        else:
+            condensed = pdist(Xc, metric='hamming')
+            class_diameter = float(condensed.max())
+            if class_diameter <= distance_threshold:
+                cluster_labels = np.ones(len(Xc), dtype=np.int32)
+            else:
+                tree = linkage(condensed, method='complete')
+                cluster_labels = fcluster(tree, t=distance_threshold, criterion='distance')
+
+        unique_labels = np.unique(cluster_labels)
+        if len(unique_labels) == 1:
+            single_cluster_count += 1
+
+        prototypes = []
+        representatives = []
+        for label in unique_labels:
+            member_idx = np.where(cluster_labels == label)[0]
+            prototypes.append(_compute_majority_prototype(class_data, member_idx, mask))
+
+            if len(member_idx) == 1:
+                representatives.append(Xc[member_idx[0]])
+            else:
+                cluster_distances = squareform(pdist(Xc[member_idx], metric='hamming'))
+                medoid_idx = member_idx[np.argmin(cluster_distances.max(axis=1))]
+                representatives.append(Xc[medoid_idx])
+
+        per_class[c] = {
+            "prototypes": np.stack(prototypes, axis=0),
+            "representatives": np.stack(representatives, axis=0),
+            "distance_threshold": distance_threshold,
+            "class_diameter": class_diameter,
+        }
+
+    print(
+        "Complete-linkage distance threshold: %.4f (%d/%d classes stayed at k=1)"
+        % (distance_threshold, single_cluster_count, len(prepared_by_class))
+    )
+    return per_class, distance_threshold
+
 
 def get_few_shot_data(n_samples, out_dir, data_file='train.pkl'):
     """
@@ -63,7 +174,8 @@ def get_fraction_data(fraction, out_dir, data_file='train.pkl'):
     f = open(os.path.join(out_dir, data_file), 'wb')
     pickle.dump(new_data, f)
 
-def get_class_attributes_data(min_class_count, out_dir, modify_data_dir='', keep_instance_data=False, k=None, clustering_method=None, seed=None):
+def get_class_attributes_data(min_class_count, out_dir, modify_data_dir='', keep_instance_data=False, k=None,
+                              clustering_method=None, seed=None, complete_linkage_single_cluster_ratio=0.5):
     """
     Use train.pkl to aggregate attributes on class level and only keep those that are predominantly 1 for at least min_class_count classes
     Transform data in modify_data_dir file using the class attribute statistics and save the new dataset to out_dir
@@ -123,12 +235,7 @@ def get_class_attributes_data(min_class_count, out_dir, modify_data_dir='', keep
                 continue
             Xc = []
             for d in class_data:
-                attrs = np.array(d['attribute_label'])[mask].astype(np.float32)
-                cert = np.array(d['attribute_certainty'])[mask]
-                not_visible = np.where((attrs == 0) & (cert == 1))[0]
-                if len(not_visible) > 0:
-                    attrs[not_visible] = class_attr_label_masked[c, not_visible]
-                Xc.append(attrs)
+                Xc.append(_prepare_masked_attributes(d, mask, class_attr_label_masked[c]).astype(np.float32))
             Xc = np.stack(Xc, axis=0)
             Kc = min(k, len(Xc))
             if clustering_method == 'kmeans':
@@ -142,35 +249,38 @@ def get_class_attributes_data(min_class_count, out_dir, modify_data_dir='', keep
             # Majority-vote prototype per cluster, ignoring not-visible (same as original)
             prototypes = np.zeros((Kc, len(mask)), dtype=np.int8)
             for j in range(Kc):
-                counts = np.zeros((len(mask), 2), dtype=np.int32)
                 member_idx = np.where(labels == j)[0]
-                for mi in member_idx:
-                    d = class_data[mi]
-                    attrs = np.array(d['attribute_label'])[mask]
-                    cert = np.array(d['attribute_certainty'])[mask]
-                    for a_i, a_val in enumerate(attrs):
-                        if a_val == 0 and cert[a_i] == 1:
-                            continue
-                        counts[a_i, a_val] += 1
-                max_label = np.argmax(counts, axis=1)
-                min_label = np.argmin(counts, axis=1)
-                tie = np.where(max_label == min_label)[0]
-                max_label[tie] = 1
-                prototypes[j] = max_label
+                prototypes[j] = _compute_majority_prototype(class_data, member_idx, mask)
             per_class[c] = {"clusterer": km, "prototypes": prototypes}
 
         def collapse_fn(d):
             c = d['class_label']
-            attrs = np.array(d['attribute_label'])[mask].astype(np.float32)
-            cert = np.array(d['attribute_certainty'])[mask]
-            not_visible = np.where((attrs == 0) & (cert == 1))[0]
-            if len(not_visible) > 0:
-                attrs[not_visible] = class_attr_label_masked[c, not_visible]
+            attrs = _prepare_masked_attributes(d, mask, class_attr_label_masked[c]).astype(np.float32)
             info = per_class[c]
             if clustering_method == 'kmeans':
                 cid = info['clusterer'].predict(attrs.reshape(1, -1))[0]
             else:
                 cid = info['clusterer'].predict(attrs.astype(np.int8).reshape(1, -1))[0]
+            return list(info['prototypes'][cid])
+    elif clustering_method == 'complete':
+        class_to_data = {c: [] for c in range(N_CLASSES)}
+        for d in data:
+            class_to_data[d['class_label']].append(d)
+
+        per_class, _ = _compute_complete_linkage_clustering(
+            class_to_data=class_to_data,
+            class_attr_label_masked=class_attr_label_masked,
+            mask=mask,
+            single_cluster_ratio=complete_linkage_single_cluster_ratio,
+            seed=seed
+        )
+
+        def collapse_fn(d):
+            c = d['class_label']
+            attrs = _prepare_masked_attributes(d, mask, class_attr_label_masked[c])
+            info = per_class[c]
+            distances = np.mean(info['representatives'] != attrs, axis=1)
+            cid = int(np.argmin(distances))
             return list(info['prototypes'][cid])
     else:
         if keep_instance_data:
@@ -181,7 +291,8 @@ def get_class_attributes_data(min_class_count, out_dir, modify_data_dir='', keep
     create_new_dataset(out_dir, 'attribute_label', collapse_fn, data_dir=modify_data_dir)
 
 
-def denoise_concepts(raw_data_dir, out_dir, min_class_count=10, k=None, clustering_method=None, keep_instance_data=False, seed=None):
+def denoise_concepts(raw_data_dir, out_dir, min_class_count=10, k=None, clustering_method=None,
+                     keep_instance_data=False, seed=None, complete_linkage_single_cluster_ratio=0.5):
     """
     Create train/val/test splits from the raw CUB data, then apply class-level concept denoising.
     k and clustering_methods are currently unused but wired for future extension.
@@ -202,7 +313,8 @@ def denoise_concepts(raw_data_dir, out_dir, min_class_count=10, k=None, clusteri
         keep_instance_data=keep_instance_data,
         k=k,
         clustering_method=clustering_method,
-        seed=seed
+        seed=seed,
+        complete_linkage_single_cluster_ratio=complete_linkage_single_cluster_ratio
     )
 
 def shuffle_class(out_dir, data_dir):
@@ -447,6 +559,8 @@ if __name__ == '__main__':
     parser.add_argument('--k', type=int, default=None, help='Number of clusters')
     parser.add_argument('--clustering_method', type=str, default=None, help='Clustering method name')
     parser.add_argument('--seed', type=int, default=42, help='Random seed for clustering')
+    parser.add_argument('--complete_linkage_single_cluster_ratio', type=float, default=0.5,
+                        help='Target fraction of classes that should stay at k=1 when using clustering_method=complete')
     args = parser.parse_args()
 
     if args.exp == 'ExtractConcepts':
@@ -468,5 +582,6 @@ if __name__ == '__main__':
             k=args.k,
             clustering_method=args.clustering_method,
             keep_instance_data=args.keep_instance_data,
-            seed=args.seed
+            seed=args.seed,
+            complete_linkage_single_cluster_ratio=args.complete_linkage_single_cluster_ratio
         )
