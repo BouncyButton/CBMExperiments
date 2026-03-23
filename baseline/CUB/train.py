@@ -90,10 +90,45 @@ def run_epoch(model, optimizer, loader, loss_meter, acc_meter, criterion, attr_c
                 loss_main = 1.0 * criterion(outputs[0], labels_var) + 0.4 * criterion(aux_outputs[0], labels_var)
                 losses.append(loss_main)
                 out_start = 1
-            if attr_criterion is not None and args.attr_loss_weight > 0: #X -> A, cotraining, end2end
+            # if attr_criterion is not None and args.attr_loss_weight > 0: #X -> A, cotraining, end2end
+            #     for i in range(len(attr_criterion)):
+            #         losses.append(args.attr_loss_weight * (1.0 * attr_criterion[i](outputs[i+out_start].squeeze().type(torch.cuda.FloatTensor), attr_labels_var[:, i]) \
+            #                                                 + 0.4 * attr_criterion[i](aux_outputs[i+out_start].squeeze().type(torch.cuda.FloatTensor), attr_labels_var[:, i])))
+            # NEW: variational option
+            if attr_criterion is not None and args.attr_loss_weight > 0:
                 for i in range(len(attr_criterion)):
-                    losses.append(args.attr_loss_weight * (1.0 * attr_criterion[i](outputs[i+out_start].squeeze().type(torch.cuda.FloatTensor), attr_labels_var[:, i]) \
-                                                            + 0.4 * attr_criterion[i](aux_outputs[i+out_start].squeeze().type(torch.cuda.FloatTensor), attr_labels_var[:, i])))
+                    # Get the raw logit and apply sigmoid for the variational term
+                    attr_logit = outputs[i + out_start].squeeze().type(torch.cuda.FloatTensor)
+                    attr_prob = torch.sigmoid(attr_logit)
+
+                    # 1. Standard Supervision Loss (Reconstruction)
+                    # For Aux logits, we add the 0.4 weight as per your original code
+                    if is_training and args.use_aux:
+                        aux_logit = aux_outputs[i + out_start].squeeze().type(torch.cuda.FloatTensor)
+                        recon_loss = 1.0 * attr_criterion[i](attr_logit, attr_labels_var[:, i]) + \
+                                     0.4 * attr_criterion[i](aux_logit, attr_labels_var[:, i])
+                    else:
+                        recon_loss = attr_criterion[i](attr_logit, attr_labels_var[:, i])
+
+                    # 2. Variational KL Term (Denoising)
+                    if args.use_variational:
+                        # Fetch prior p for this attribute from our precomputed class priors
+                        # batch_priors shape: [Batch, N_Attributes]
+                        p = args.class_priors[labels_var, i]
+                        q = attr_prob
+
+                        # Analytical Binary KL Divergence
+                        kl_loss = (q * torch.log((q + 1e-10) / (p + 1e-10)) +
+                                   (1 - q) * torch.log((1 - q + 1e-10) / (1 - p + 1e-10))).mean()
+
+                        # Final attribute loss combined with beta
+                        total_attr_loss = args.attr_loss_weight * (recon_loss + args.beta * kl_loss)
+                    else:
+                        # Original standard CBM loss
+                        total_attr_loss = args.attr_loss_weight * recon_loss
+
+                    losses.append(total_attr_loss)
+
         else: #testing or no aux logits
             outputs = model(inputs_var)
             losses = []
@@ -106,10 +141,25 @@ def run_epoch(model, optimizer, loader, loss_meter, acc_meter, criterion, attr_c
                 for i in range(len(attr_criterion)):
                     losses.append(args.attr_loss_weight * attr_criterion[i](outputs[i+out_start].squeeze().type(torch.cuda.FloatTensor), attr_labels_var[:, i]))
 
-        if args.bottleneck: #attribute accuracy
+        # if args.bottleneck: #attribute accuracy
+        #     sigmoid_outputs = torch.nn.Sigmoid()(torch.cat(outputs, dim=1))
+        #     acc = binary_accuracy(sigmoid_outputs, attr_labels)
+        #     acc_meter.update(acc.data.cpu().numpy(), inputs.size(0))
+        # NEW: variational
+        if args.bottleneck:  # attribute accuracy
             sigmoid_outputs = torch.nn.Sigmoid()(torch.cat(outputs, dim=1))
-            acc = binary_accuracy(sigmoid_outputs, attr_labels)
-            acc_meter.update(acc.data.cpu().numpy(), inputs.size(0))
+
+            # 1. Accuracy vs Noisy Labels (Original)
+            acc_noisy = binary_accuracy(sigmoid_outputs, attr_labels)
+            acc_meter.update(acc_noisy.data.cpu().numpy(), inputs.size(0))
+
+            # 2. Accuracy vs Class Prior (Majority Vote) - LOG ONLY
+            # if args.use_variational:
+            #     # Discretize the priors to get the 'Majority Vote' target
+            #     maj_targets = (args.class_priors[labels_var] > 0.5).float()
+            #     acc_prior = binary_accuracy(sigmoid_outputs, maj_targets.cpu())
+            #     prior_acc_meter.update(...)
+
         else:
             acc = accuracy(outputs[0], labels, topk=(1,)) #only care about class prediction accuracy
             acc_meter.update(acc[0], inputs.size(0))
@@ -201,6 +251,64 @@ def train(model, args):
                                  n_class_attr=args.n_class_attr, resampling=args.resampling, num_workers=args.num_workers, pin_memory=args.pin_memory)
         val_loader = load_data([val_data_path], args.use_attr, args.no_img, args.batch_size, image_dir=args.image_dir, n_class_attr=args.n_class_attr, \
                               num_workers=args.num_workers, pin_memory=args.pin_memory)
+
+    # NEW: compute class priors.
+
+    def compute_class_priors(train_loader, n_classes, n_attributes):
+        """
+        Computes the mean probability of each attribute per class.
+        This acts as the p(c|y) prior for the Variational Loss.
+        """
+        print("Precomputing Class-Conditional Priors (Majority Vote)...")
+
+        # Initialize accumulators
+        # Shape: [N_CLASSES, N_ATTRIBUTES]
+        class_attr_sums = torch.zeros(n_classes, n_attributes).cuda()
+        class_counts = torch.zeros(n_classes).cuda()
+
+        # We don't need gradients for this
+        with torch.no_grad():
+            for data in tqdm(train_loader):
+                # Based on your provided run_epoch logic:
+                # data = (inputs, labels, attr_labels)
+                _, labels, attr_labels = data
+
+                # 1. Standardize attribute labels to [Batch, N_Attributes]
+                if n_attributes > 1:
+                    # The CUB loader often returns a list of N_ATTR tensors of size [Batch]
+                    attr_labels = [i.long() for i in attr_labels]
+                    attr_labels = torch.stack(attr_labels).t().float()
+                else:
+                    if isinstance(attr_labels, list):
+                        attr_labels = attr_labels[0]
+                    attr_labels = attr_labels.unsqueeze(1).float()
+
+                attr_labels = attr_labels.cuda()
+                labels = labels.cuda()
+
+                # 2. Aggregate sums per class
+                for i in range(labels.size(0)):
+                    target_class = labels[i]
+                    class_attr_sums[target_class] += attr_labels[i]
+                    class_counts[target_class] += 1
+
+        # 3. Calculate Mean (Probability of attribute being 1 for that class)
+        # Avoid division by zero for classes with no samples (though rare in CUB)
+        class_counts = class_counts.unsqueeze(1).clamp(min=1)
+        priors = class_attr_sums / class_counts
+
+        # 4. Critical Step: Clamp values
+        # KL Divergence involves log(p), so we must stay away from 0.0 and 1.0
+        priors = priors.clamp(1e-4, 1 - 1e-4)
+
+        print(f"Prior computation complete. Shape: {priors.shape}")
+        return priors
+
+    if args.use_variational:
+        # Precompute priors using the training set distribution
+        args.class_priors = compute_class_priors(train_loader, args.n_classes, args.n_attributes)
+    else:
+        args.class_priors = None
 
     best_val_epoch = -1
     best_val_loss = float('inf')
@@ -375,6 +483,8 @@ def parse_arguments(experiment):
                             help='Whether to use concepts as auxiliary features (in multitasking) to predict Y')
         parser.add_argument('--num_workers', type=int, default=0, help='Number of DataLoader workers')
         parser.add_argument('--pin_memory', action='store_true', help='Enable DataLoader pin_memory')
+        parser.add_argument('--use_variational', action='store_true', help='Whether to use variational loss for attribute prediction')
+        parser.add_argument('--beta', type=float, default=1.0, help='Weight for the KL divergence term in the variational loss')
         args = parser.parse_args()
         args.three_class = (args.n_class_attr == 3)
         return (args,)

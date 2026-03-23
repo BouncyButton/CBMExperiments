@@ -130,6 +130,101 @@ def _compute_complete_linkage_clustering(class_to_data, class_attr_label_masked,
     return per_class, distance_threshold
 
 
+def _compute_kmodes_threshold_clustering(class_to_data, class_attr_label_masked, mask, single_cluster_ratio, seed):
+    if not 0.0 <= single_cluster_ratio <= 1.0:
+        raise ValueError("kmodes_single_cluster_ratio must be in [0, 1].")
+
+    try:
+        from kmodes.kmodes import KModes
+    except Exception as e:
+        raise ImportError(
+            "clustering_method='kmodes_threshold' requires the kmodes package. Install with `pip install kmodes`."
+        ) from e
+
+    rng = np.random.RandomState(42 if seed is None else seed)
+    prepared_by_class = {}
+    centroid_distances = []
+
+    for c in range(N_CLASSES):
+        class_data = class_to_data.get(c, [])
+        if not class_data:
+            continue
+
+        fallback_attrs = class_attr_label_masked[c]
+        Xc = np.stack([
+            _prepare_masked_attributes(d, mask, fallback_attrs)
+            for d in class_data
+        ], axis=0).astype(np.int8)
+
+        if len(Xc) <= 1:
+            labels = np.zeros(len(Xc), dtype=np.int32)
+            centroids = Xc.copy()
+            centroid_distance = 0.0
+        else:
+            km = KModes(n_clusters=2, init='Huang', n_init=5, random_state=rng.randint(0, 1_000_000))
+            labels = km.fit_predict(Xc)
+            centroids = km.cluster_centroids_.astype(np.int8)
+            centroid_distance = float(np.mean(centroids[0] != centroids[1]))
+
+        prepared_by_class[c] = {
+            "class_data": class_data,
+            "X": Xc,
+            "labels": labels,
+            "centroids": centroids,
+            "centroid_distance": centroid_distance,
+        }
+        centroid_distances.append(centroid_distance)
+
+    if not centroid_distances:
+        return {}, 0.0
+
+    distance_threshold = float(np.quantile(centroid_distances, single_cluster_ratio))
+    per_class = {}
+    single_cluster_count = 0
+
+    for c, info in prepared_by_class.items():
+        class_data = info["class_data"]
+        Xc = info["X"]
+        centroid_distance = info["centroid_distance"]
+
+        if len(Xc) <= 1 or centroid_distance <= distance_threshold:
+            prototypes = np.expand_dims(
+                _compute_majority_prototype(class_data, np.arange(len(class_data)), mask),
+                axis=0
+            )
+            representatives = np.expand_dims(
+                Xc[0] if len(Xc) else class_attr_label_masked[c].astype(np.int8),
+                axis=0
+            )
+            single_cluster = True
+        else:
+            labels = info["labels"]
+            unique_labels = np.unique(labels)
+            prototypes = np.zeros((len(unique_labels), len(mask)), dtype=np.int8)
+            representatives = np.zeros((len(unique_labels), len(mask)), dtype=np.int8)
+            for j, label in enumerate(unique_labels):
+                member_idx = np.where(labels == label)[0]
+                prototypes[j] = _compute_majority_prototype(class_data, member_idx, mask)
+                representatives[j] = info["centroids"][label]
+            single_cluster = False
+
+        if single_cluster:
+            single_cluster_count += 1
+
+        per_class[c] = {
+            "prototypes": prototypes,
+            "representatives": representatives,
+            "distance_threshold": distance_threshold,
+            "centroid_distance": centroid_distance,
+        }
+
+    print(
+        "KModes-threshold distance threshold: %.4f (%d/%d classes stayed at k=1)"
+        % (distance_threshold, single_cluster_count, len(prepared_by_class))
+    )
+    return per_class, distance_threshold
+
+
 def get_few_shot_data(n_samples, out_dir, data_file='train.pkl'):
     """
     For few shot training: from data_file, sample n_samples randomly and save the metadata corresponding to these samples to out_dir
@@ -175,7 +270,8 @@ def get_fraction_data(fraction, out_dir, data_file='train.pkl'):
     pickle.dump(new_data, f)
 
 def get_class_attributes_data(min_class_count, out_dir, modify_data_dir='', keep_instance_data=False, k=None,
-                              clustering_method=None, seed=None, complete_linkage_single_cluster_ratio=0.5):
+                              clustering_method=None, seed=None, complete_linkage_single_cluster_ratio=0.5,
+                              kmodes_single_cluster_ratio=0.5):
     """
     Use train.pkl to aggregate attributes on class level and only keep those that are predominantly 1 for at least min_class_count classes
     Transform data in modify_data_dir file using the class attribute statistics and save the new dataset to out_dir
@@ -262,7 +358,7 @@ def get_class_attributes_data(min_class_count, out_dir, modify_data_dir='', keep
             else:
                 cid = info['clusterer'].predict(attrs.astype(np.int8).reshape(1, -1))[0]
             return list(info['prototypes'][cid])
-    elif clustering_method == 'complete':
+    elif clustering_method == 'complete':  # --clustering_method=complete
         class_to_data = {c: [] for c in range(N_CLASSES)}
         for d in data:
             class_to_data[d['class_label']].append(d)
@@ -272,6 +368,26 @@ def get_class_attributes_data(min_class_count, out_dir, modify_data_dir='', keep
             class_attr_label_masked=class_attr_label_masked,
             mask=mask,
             single_cluster_ratio=complete_linkage_single_cluster_ratio,
+            seed=seed
+        )
+
+        def collapse_fn(d):
+            c = d['class_label']
+            attrs = _prepare_masked_attributes(d, mask, class_attr_label_masked[c])
+            info = per_class[c]
+            distances = np.mean(info['representatives'] != attrs, axis=1)
+            cid = int(np.argmin(distances))
+            return list(info['prototypes'][cid])
+    elif clustering_method == 'kmodes_threshold':
+        class_to_data = {c: [] for c in range(N_CLASSES)}
+        for d in data:
+            class_to_data[d['class_label']].append(d)
+
+        per_class, _ = _compute_kmodes_threshold_clustering(
+            class_to_data=class_to_data,
+            class_attr_label_masked=class_attr_label_masked,
+            mask=mask,
+            single_cluster_ratio=kmodes_single_cluster_ratio,
             seed=seed
         )
 
@@ -292,10 +408,11 @@ def get_class_attributes_data(min_class_count, out_dir, modify_data_dir='', keep
 
 
 def denoise_concepts(raw_data_dir, out_dir, min_class_count=10, k=None, clustering_method=None,
-                     keep_instance_data=False, seed=None, complete_linkage_single_cluster_ratio=0.5):
+                     keep_instance_data=False, seed=None, complete_linkage_single_cluster_ratio=0.5,
+                     kmodes_single_cluster_ratio=0.5):
     """
     Create train/val/test splits from the raw CUB data, then apply class-level concept denoising.
-    k and clustering_methods are currently unused but wired for future extension.
+
     """
     os.makedirs(out_dir, exist_ok=True)
     splits_dir = os.path.join(out_dir, '_splits')
@@ -314,7 +431,8 @@ def denoise_concepts(raw_data_dir, out_dir, min_class_count=10, k=None, clusteri
         k=k,
         clustering_method=clustering_method,
         seed=seed,
-        complete_linkage_single_cluster_ratio=complete_linkage_single_cluster_ratio
+        complete_linkage_single_cluster_ratio=complete_linkage_single_cluster_ratio,
+        kmodes_single_cluster_ratio=kmodes_single_cluster_ratio
     )
 
 def shuffle_class(out_dir, data_dir):
@@ -561,6 +679,8 @@ if __name__ == '__main__':
     parser.add_argument('--seed', type=int, default=42, help='Random seed for clustering')
     parser.add_argument('--complete_linkage_single_cluster_ratio', type=float, default=0.5,
                         help='Target fraction of classes that should stay at k=1 when using clustering_method=complete')
+    parser.add_argument('--kmodes_single_cluster_ratio', type=float, default=0.5,
+                        help='Target fraction of classes that should stay at k=1 when using clustering_method=kmodes_threshold')
     args = parser.parse_args()
 
     if args.exp == 'ExtractConcepts':
@@ -583,5 +703,6 @@ if __name__ == '__main__':
             clustering_method=args.clustering_method,
             keep_instance_data=args.keep_instance_data,
             seed=args.seed,
-            complete_linkage_single_cluster_ratio=args.complete_linkage_single_cluster_ratio
+            complete_linkage_single_cluster_ratio=args.complete_linkage_single_cluster_ratio,
+            kmodes_single_cluster_ratio=args.kmodes_single_cluster_ratio
         )
