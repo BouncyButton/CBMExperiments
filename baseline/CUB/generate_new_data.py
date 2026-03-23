@@ -399,7 +399,7 @@ def create_logits_data(model_path, out_dir, data_dir='', use_relu=False, use_sig
     get_logits_train = lambda d: inference(d['img_path'], model, use_relu, use_sigmoid, is_train=True)
     get_logits_test = lambda d: inference(d['img_path'], model, use_relu, use_sigmoid, is_train=False)
     create_new_dataset(out_dir, 'attribute_label', get_logits_train, datasets=['train'], data_dir=data_dir)
-    create_new_dataset(out_dir, 'attribute_label', get_logits_train, datasets=['val', 'test'], data_dir=data_dir)
+    create_new_dataset(out_dir, 'attribute_label', get_logits_test, datasets=['val', 'test'], data_dir=data_dir)  # there was a nasty bug here!!
 
 def get_representation_linear_probe(model_path, layer_idx, out_dir, data_dir):
     model = torch.load(model_path)
