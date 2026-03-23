@@ -254,15 +254,18 @@ def train(model, args):
 
     # NEW: compute class priors.
 
-    def compute_class_priors(train_loader, n_classes, n_attributes):
+    def compute_class_priors(train_loader, n_attributes):
         """
         Computes the mean probability of each attribute per class.
         This acts as the p(c|y) prior for the Variational Loss.
         """
         print("Precomputing Class-Conditional Priors (Majority Vote)...")
 
+        from CUB.config import N_ATTRIBUTES, N_CLASSES
+        n_classes = N_CLASSES
         # Initialize accumulators
         # Shape: [N_CLASSES, N_ATTRIBUTES]
+
         class_attr_sums = torch.zeros(n_classes, n_attributes).cuda()
         class_counts = torch.zeros(n_classes).cuda()
 
@@ -306,7 +309,7 @@ def train(model, args):
 
     if args.use_variational:
         # Precompute priors using the training set distribution
-        args.class_priors = compute_class_priors(train_loader, args.n_classes, args.n_attributes)
+        args.class_priors = compute_class_priors(train_loader, args.n_attributes)
     else:
         args.class_priors = None
 
